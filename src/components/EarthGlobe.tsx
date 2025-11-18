@@ -1,17 +1,25 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchCables } from '@/lib/api';
+import { fetchCables, fetchSolarWind } from '@/lib/api';
+import { getAIPredictions, ImpactZone } from '@/lib/aiPredictions';
 import Globe from 'globe.gl';
 import { toast } from 'sonner';
 
 export const EarthGlobe = () => {
   const globeEl = useRef<HTMLDivElement>(null);
   const globeInstance = useRef<any>(null);
+  const [impactZones, setImpactZones] = useState<ImpactZone[]>([]);
 
   const { data: cables, isLoading, isError } = useQuery({
     queryKey: ['cables'],
     queryFn: fetchCables,
     retry: 2,
+  });
+
+  const { data: solarData } = useQuery({
+    queryKey: ['solar-wind'],
+    queryFn: fetchSolarWind,
+    refetchInterval: 60000,
   });
 
   useEffect(() => {
@@ -21,9 +29,31 @@ export const EarthGlobe = () => {
   }, [isError]);
 
   useEffect(() => {
+    const fetchPredictions = async () => {
+      if (!solarData || !cables || cables.length === 0) return;
+      
+      try {
+        console.log('Fetching AI predictions...');
+        const predictions = await getAIPredictions(solarData, cables);
+        console.log('AI predictions received:', predictions);
+        setImpactZones(predictions.impactZones || []);
+        
+        if (predictions.analysis) {
+          toast.info(`AI Analysis: ${predictions.analysis.primary_impact_region}`, {
+            description: `Storm duration: ${predictions.analysis.estimated_storm_duration_hours}h | Confidence: ${(predictions.analysis.confidence * 100).toFixed(0)}%`
+          });
+        }
+      } catch (error) {
+        console.error('Failed to get AI predictions:', error);
+      }
+    };
+
+    fetchPredictions();
+  }, [solarData, cables]);
+
+  useEffect(() => {
     if (!globeEl.current) return;
 
-    // Initialize globe
     const globe = new Globe(globeEl.current)
       .globeImageUrl('//unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
       .bumpImageUrl('//unpkg.com/three-globe/example/img/earth-topology.png')
@@ -33,10 +63,8 @@ export const EarthGlobe = () => {
       .width(window.innerWidth)
       .height(window.innerHeight);
 
-    // Set initial view
     globe.pointOfView({ altitude: 2.5 });
 
-    // Enable controls
     const controls = globe.controls();
     controls.enableZoom = true;
     controls.autoRotate = true;
@@ -44,7 +72,6 @@ export const EarthGlobe = () => {
 
     globeInstance.current = globe;
 
-    // Handle window resize
     const handleResize = () => {
       globe.width(window.innerWidth).height(window.innerHeight);
     };
@@ -59,9 +86,8 @@ export const EarthGlobe = () => {
   }, []);
 
   useEffect(() => {
-    if (!globeInstance.current || !cables || !Array.isArray(cables) || cables.length === 0) return;
+    if (!globeInstance.current || !Array.isArray(cables) || cables.length === 0) return;
 
-    // Convert cable data to arcs format
     const arcsData = cables.flatMap((cable) => {
       const arcs = [];
       for (let i = 0; i < cable.coordinates.length - 1; i++) {
@@ -77,7 +103,6 @@ export const EarthGlobe = () => {
       return arcs;
     });
 
-    // Add cables as arcs
     globeInstance.current
       .arcsData(arcsData)
       .arcColor('color')
@@ -88,7 +113,6 @@ export const EarthGlobe = () => {
       .arcAltitude(0.1)
       .arcLabel('name');
 
-    // Add endpoint markers
     const pointsData = cables.flatMap((cable) =>
       cable.coordinates.map((coord) => ({
         lat: coord[1],
@@ -106,6 +130,39 @@ export const EarthGlobe = () => {
       .pointRadius('size')
       .pointLabel('name');
   }, [cables]);
+
+  useEffect(() => {
+    if (!globeInstance.current || impactZones.length === 0) return;
+
+    const getSeverityColor = (severity: string) => {
+      switch (severity) {
+        case 'critical': return '#ff0055';
+        case 'high': return '#ff6b35';
+        case 'medium': return '#ffd93d';
+        case 'low': return '#00ff88';
+        default: return '#00d9ff';
+      }
+    };
+
+    const ringsData = impactZones.map(zone => ({
+      lat: zone.lat,
+      lng: zone.lng,
+      maxR: zone.radius / 100,
+      propagationSpeed: 1,
+      repeatPeriod: 2000,
+      color: getSeverityColor(zone.severity),
+      label: zone.description
+    }));
+
+    globeInstance.current
+      .ringsData(ringsData)
+      .ringColor('color')
+      .ringMaxRadius('maxR')
+      .ringPropagationSpeed('propagationSpeed')
+      .ringRepeatPeriod('repeatPeriod')
+      .ringLabel('label');
+
+  }, [impactZones]);
 
   return (
     <div className="relative w-full h-screen">
