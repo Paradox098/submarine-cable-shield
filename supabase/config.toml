@@ -1,0 +1,4 @@
+project_id = "myvgcqojlzjxxewqtobz"
+
+[functions.predict-solar-impact]
+verify_jwt = false
